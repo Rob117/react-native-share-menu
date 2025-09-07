@@ -86,7 +86,10 @@ class ShareViewController: SLComposeServiceViewController {
             self.storeText(withProvider: provider, semaphore)
           } else if provider.isURL {
             self.storeUrl(withProvider: provider, semaphore)
+          } else if provider.isImage || provider.isData {
+            self.storeFile(withProvider: provider, semaphore)
           } else {
+            print("Warning: Unsupported provider type, treating as file")
             self.storeFile(withProvider: provider, semaphore)
           }
 
@@ -161,70 +164,209 @@ class ShareViewController: SLComposeServiceViewController {
   }
   
   func storeFile(withProvider provider: NSItemProvider, _ semaphore: DispatchSemaphore) {
-    provider.loadItem(forTypeIdentifier: kUTTypeData as String, options: nil) { (data, error) in
-      if let error = error {
-        print("Error loading item: \(error.localizedDescription)")  // Log any errors
-        self.exit(withError: error.localizedDescription)
-        return
-      }
-
-      var url: URL? // Declare url variable outside the if-else block
-
-      if let image = data as? UIImage {
-          // Convert the UIImage to Data
-          guard let imageData = image.pngData() else { // Use image.jpegData(compressionQuality:) for JPEG
-              self.exit(withError: COULD_NOT_CONVERT_IMG_ERROR)
-              return
+    // Use the enhanced extension methods for better type detection
+    if provider.isImage {
+      print("Loading as image (from Photos app or image file)")
+      // Use the modern loadObject method for images to properly specify expected class
+      if #available(iOS 11.0, *) {
+        provider.loadObject(ofClass: UIImage.self) { (image, error) in
+          if let error = error {
+            print("Error loading UIImage object: \(error.localizedDescription)")
+            // Fallback to URL loading
+            self.loadImageAsURL(provider: provider, semaphore: semaphore)
+            return
           }
-
-          // Get the file path URL in the app's documents directory or temporary directory
-          guard let fileURL = self.createFileURL(forImageWithExtension: "png") else { // Use "jpeg" for JPEG
-              self.exit(withError: COULD_NOT_CREATE_FILE_URL_ERROR)
-              return
+          
+          if let uiImage = image as? UIImage {
+            print("Successfully loaded UIImage object")
+            self.handleImageData(uiImage, semaphore)
+          } else {
+            print("Failed to cast loaded object to UIImage, trying URL fallback")
+            self.loadImageAsURL(provider: provider, semaphore: semaphore)
           }
-
-          // Write the data to the file
-          do {
-              try imageData.write(to: fileURL)
-              url = fileURL // Assign the newly created file URL to url variable
-          } catch {
-              self.exit(withError: COULD_NOT_SAVE_FILE_ERROR)
-              return
-          }
-      } else if let providedURL = data as? URL {
-          url = providedURL // Assign the provided URL to url variable
+        }
       } else {
+        // Fallback for iOS < 11
+        self.loadImageAsURL(provider: provider, semaphore: semaphore)
+      }
+    } else if provider.isData {
+      print("Loading as data/file")
+      provider.loadItem(forTypeIdentifier: kUTTypeData as String, options: nil) { (data, error) in
+        if let error = error {
+          print("Error loading file: \(error.localizedDescription)")
+          self.exit(withError: error.localizedDescription)
+          return
+        }
+        
+        self.handleFileData(data, semaphore)
+      }
+    } else {
+      print("Warning: Unknown provider type, attempting to load as data")
+      provider.loadItem(forTypeIdentifier: kUTTypeData as String, options: nil) { (data, error) in
+        if let error = error {
+          print("Error loading unknown type as data: \(error.localizedDescription)")
+          self.exit(withError: error.localizedDescription)
+          return
+        }
+        
+        self.handleFileData(data, semaphore)
+      }
+    }
+  }
+  
+  private func loadImageAsURL(provider: NSItemProvider, semaphore: DispatchSemaphore) {
+    print("Fallback: Loading image as URL")
+    if #available(iOS 11.0, *) {
+      provider.loadObject(ofClass: URL.self) { (url, error) in
+        if let error = error {
+          print("Error loading URL object: \(error.localizedDescription)")
+          self.exit(withError: error.localizedDescription)
+          return
+        }
+        
+        if let imageURL = url as? URL {
+          print("Successfully loaded image URL: \(imageURL.path)")
+          self.handleImageData(imageURL, semaphore)
+        } else {
+          print("Failed to cast loaded object to URL")
           self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
-          return
+        }
       }
-
-      // Proceed with the rest of your code
-      guard let url = url, let hostAppId = self.hostAppId else {
-          self.exit(withError: NO_INFO_PLIST_INDENTIFIER_ERROR)
+    } else {
+      // iOS < 11 fallback
+      provider.loadItem(forTypeIdentifier: kUTTypeImage as String, options: nil) { (data, error) in
+        if let error = error {
+          print("Error loading image item (iOS <11): \(error.localizedDescription)")
+          self.exit(withError: error.localizedDescription)
           return
+        }
+        
+        self.handleImageData(data, semaphore)
       }
-
-      guard let groupFileManagerContainer = FileManager.default
-              .containerURL(forSecurityApplicationGroupIdentifier: "group.\(hostAppId)")
-      else {
-          self.exit(withError: NO_APP_GROUP_ERROR)
-          return
-      }
-
-      // Here, use url directly as it is already in the correct scope
-      let mimeType = url.extractMimeType() // Ensure this method exists and works correctly
-      let fileExtension = url.pathExtension
-      let fileName = UUID().uuidString
-      let filePath = groupFileManagerContainer.appendingPathComponent("\(fileName).\(fileExtension)")
-
-      guard self.moveFileToDisk(from: url, to: filePath) else {
-          self.exit(withError: COULD_NOT_SAVE_FILE_ERROR)
-          return
+    }
+  }
+  
+  private func handleImageData(_ data: Any?, _ semaphore: DispatchSemaphore) {
+    print("Handling image data of type: \(type(of: data))")
+    
+    guard let data = data else {
+      print("Error: Image data is nil")
+      self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+      return
+    }
+    
+    var url: URL?
+    
+    if let image = data as? UIImage {
+      print("Processing UIImage from Photos app, size: \(image.size)")
+      
+      // Convert UIImage to file URL - try JPEG first for better compression
+      var imageData: Data?
+      var fileExtension = "jpg"
+      
+      if let jpegData = image.jpegData(compressionQuality: 0.8) {
+        imageData = jpegData
+        fileExtension = "jpg"
+      } else if let pngData = image.pngData() {
+        imageData = pngData
+        fileExtension = "png"
       }
       
-      self.sharedItems.append([DATA_KEY: filePath.absoluteString, MIME_TYPE_KEY: mimeType])
-      semaphore.signal()
+      guard let finalImageData = imageData else {
+        print("Error: Could not convert UIImage to data")
+        self.exit(withError: COULD_NOT_CONVERT_IMG_ERROR)
+        return
+      }
+      
+      guard let fileURL = self.createFileURL(forImageWithExtension: fileExtension) else {
+        print("Error: Could not create file URL")
+        self.exit(withError: COULD_NOT_CREATE_FILE_URL_ERROR)
+        return
+      }
+      
+      do {
+        try finalImageData.write(to: fileURL)
+        url = fileURL
+        print("Successfully saved UIImage to: \(fileURL.path)")
+      } catch {
+        print("Error writing image data: \(error.localizedDescription)")
+        self.exit(withError: COULD_NOT_SAVE_FILE_ERROR)
+        return
+      }
+    } else if let imageURL = data as? URL {
+      print("Processing image URL: \(imageURL.path)")
+      
+      // Verify the file exists
+      if !FileManager.default.fileExists(atPath: imageURL.path) {
+        print("Warning: Image file does not exist at path: \(imageURL.path)")
+        self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+        return
+      }
+      
+      url = imageURL
+    } else {
+      print("Error: Unexpected image data type: \(type(of: data))")
+      self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+      return
     }
+    
+    self.processFileURL(url, semaphore)
+  }
+  
+  private func handleFileData(_ data: Any?, _ semaphore: DispatchSemaphore) {
+    print("Handling file data of type: \(type(of: data))")
+    
+    guard let data = data else {
+      print("Error: File data is nil")
+      self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+      return
+    }
+    
+    var url: URL?
+    
+    if let providedURL = data as? URL {
+      print("Processing file URL: \(providedURL.path)")
+      
+      // Verify the file exists
+      if !FileManager.default.fileExists(atPath: providedURL.path) {
+        print("Warning: File does not exist at path: \(providedURL.path)")
+      }
+      
+      url = providedURL
+    } else {
+      print("Error: Expected URL but got: \(type(of: data))")
+      self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+      return
+    }
+    
+    self.processFileURL(url, semaphore)
+  }
+  
+  private func processFileURL(_ url: URL?, _ semaphore: DispatchSemaphore) {
+    guard let url = url, let hostAppId = self.hostAppId else {
+      self.exit(withError: NO_INFO_PLIST_INDENTIFIER_ERROR)
+      return
+    }
+    
+    guard let groupFileManagerContainer = FileManager.default
+      .containerURL(forSecurityApplicationGroupIdentifier: "group.\(hostAppId)")
+    else {
+      self.exit(withError: NO_APP_GROUP_ERROR)
+      return
+    }
+    
+    let mimeType = url.extractMimeType()
+    let fileExtension = url.pathExtension
+    let fileName = UUID().uuidString
+    let filePath = groupFileManagerContainer.appendingPathComponent("\(fileName).\(fileExtension)")
+    
+    guard self.moveFileToDisk(from: url, to: filePath) else {
+      self.exit(withError: COULD_NOT_SAVE_FILE_ERROR)
+      return
+    }
+    
+    self.sharedItems.append([DATA_KEY: filePath.absoluteString, MIME_TYPE_KEY: mimeType])
+    semaphore.signal()
   }
 
   func moveFileToDisk(from srcUrl: URL, to destUrl: URL) -> Bool {
@@ -252,18 +394,67 @@ class ShareViewController: SLComposeServiceViewController {
       return
     }
     
-    let url = URL(string: urlScheme)
-    let selectorOpenURL = sel_registerName("openURL:")
+    guard let url = URL(string: urlScheme) else {
+      print("Error: Invalid URL scheme: \(urlScheme)")
+      exit(withError: "Invalid URL scheme")
+      return
+    }
+    
+    print("Opening host app with URL: \(url)")
+    
+    // Method 1: Use extensionContext.open (iOS 10+) - This is the proper way for share extensions
+    if #available(iOS 10.0, *) {
+      print("Using extensionContext.open (recommended for share extensions)")
+      self.extensionContext?.open(url) { success in
+        print("extensionContext.open result: \(success)")
+        if !success {
+          print("extensionContext.open failed, trying responder chain fallback...")
+          self.tryResponderChainOpen(url)
+        }
+      }
+    } else {
+      // iOS < 10 fallback
+      print("iOS < 10: Using responder chain approach")
+      self.tryResponderChainOpen(url)
+    }
+    
+    completeRequest()
+  }
+  
+  private func tryResponderChainOpen(_ url: URL) {
+    print("Using responder chain approach (share extension compatible)")
+    
+    // Walk up the responder chain to find UIApplication and use the modern API
     var responder: UIResponder? = self
     
     while responder != nil {
-      if responder?.responds(to: selectorOpenURL) == true {
-        responder?.perform(selectorOpenURL, with: url)
+      // Check if we found UIApplication (but don't access .shared directly)
+      if let app = responder as? UIApplication {
+        print("Found UIApplication in responder chain")
+        
+        // Use the modern open API instead of deprecated openURL:
+        if #available(iOS 10.0, *) {
+          print("Using modern UIApplication.open method")
+          app.open(url, options: [:]) { success in
+            print("Responder chain UIApplication.open result: \(success)")
+          }
+        } else {
+          // For iOS < 10, we have to use the deprecated method
+          let openURLSelector = sel_registerName("openURL:")
+          if app.responds(to: openURLSelector) {
+            print("Using deprecated openURL for iOS < 10")
+            app.perform(openURLSelector, with: url)
+          }
+        }
+        return
       }
       responder = responder!.next
     }
     
-    completeRequest()
+    print("No UIApplication found in responder chain")
+    
+    // Note: We intentionally do NOT use UIApplication.shared here as it's not available in extensions
+    // Finding UIApplication through the responder chain is the proper way for share extensions
   }
   
   func completeRequest() {

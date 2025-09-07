@@ -126,32 +126,42 @@ public class ShareMenuReactView: NSObject {
                         semaphore.wait()
                     } else if provider.hasItemConformingToTypeIdentifier(kUTTypeImage as String) {
                         provider.loadItem(forTypeIdentifier: kUTTypeImage as String, options: nil) { (item, error) in
-                            let imageUrl: URL! = item as? URL
-
-                            if (imageUrl != nil) {
+                            if let error = error {
+                                print("Error loading image item: \(error.localizedDescription)")
+                                callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Error loading image: \(error.localizedDescription)", userInfo:nil))
+                                return
+                            }
+                            
+                            // Handle URL-based images first (from file system)
+                            if let imageUrl = item as? URL {
                                 if let imageData = try? Data(contentsOf: imageUrl) {
                                     results.append([DATA_KEY: imageUrl.absoluteString, MIME_TYPE_KEY: self.extractMimeType(from: imageUrl)])
+                                } else {
+                                    print("Warning: Could not load image data from URL: \(imageUrl)")
+                                }
+                            } 
+                            // Handle UIImage objects (from Photos app)
+                            else if let image = item as? UIImage {
+                                let imageData: Data! = image.pngData()
+                                
+                                // Creating temporary URL for image data (UIImage)
+                                guard let imageURL = NSURL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("TemporaryScreenshot.png") else {
+                                    callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Could not create temporary URL", userInfo:nil))
+                                    return
+                                }
+                                
+                                do {
+                                    // Writing the image to the URL
+                                    try imageData.write(to: imageURL)
+                                    
+                                    results.append([DATA_KEY: imageURL.absoluteString, MIME_TYPE_KEY: imageURL.extractMimeType()])
+                                } catch {
+                                    print("Error writing image data: \(error.localizedDescription)")
+                                    callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Can't save image: \(error.localizedDescription)", userInfo:nil))
                                 }
                             } else {
-                                let image: UIImage! = item as? UIImage
-
-                                if (image != nil) {
-                                    let imageData: Data! = image.pngData();
-
-                                    // Creating temporary URL for image data (UIImage)
-                                    guard let imageURL = NSURL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("TemporaryScreenshot.png") else {
-                                        return
-                                    }
-
-                                    do {
-                                        // Writing the image to the URL
-                                        try imageData.write(to: imageURL)
-
-                                        results.append([DATA_KEY: imageURL.absoluteString, MIME_TYPE_KEY: imageURL.extractMimeType()])
-                                    } catch {
-                                        callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Can't load image", userInfo:nil))
-                                    }
-                                }
+                                print("Warning: Received unexpected image data type: \(type(of: item))")
+                                callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Unexpected image data type", userInfo:nil))
                             }
 
                             semaphore.signal()
