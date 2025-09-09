@@ -57,10 +57,10 @@ class ShareMenu: RCTEventEmitter {
             initialShare = (app, url, options)
             return
         }
-        
+
         ShareMenu.shared.share(application: app, openUrl: url, options: options)
     }
-    
+
     func share(
         application app: UIApplication,
         openUrl url: URL,
@@ -111,7 +111,7 @@ class ShareMenu: RCTEventEmitter {
         callback([data as Any])
         sharedData = []
     }
-    
+
     func dispatchEvent(with data: [[String:String]], and extraData: [String:Any]?) {
         guard hasListeners else { return }
 
@@ -119,7 +119,7 @@ class ShareMenu: RCTEventEmitter {
         if (extraData != nil) {
             finalData[EXTRA_DATA_KEY] = extraData
         }
-        
+
         sendEvent(withName: NEW_SHARE_EVENT, body: finalData)
     }
 }

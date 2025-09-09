@@ -131,7 +131,7 @@ public class ShareMenuReactView: NSObject {
                                 callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Error loading image: \(error.localizedDescription)", userInfo:nil))
                                 return
                             }
-                            
+
                             // Handle URL-based images first (from file system)
                             if let imageUrl = item as? URL {
                                 if let imageData = try? Data(contentsOf: imageUrl) {
@@ -143,17 +143,17 @@ public class ShareMenuReactView: NSObject {
                             // Handle UIImage objects (from Photos app)
                             else if let image = item as? UIImage {
                                 let imageData: Data! = image.pngData()
-                                
+
                                 // Creating temporary URL for image data (UIImage)
                                 guard let imageURL = NSURL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("TemporaryScreenshot.png") else {
                                     callback(nil, NSException(name: NSExceptionName(rawValue: "Error"), reason:"Could not create temporary URL", userInfo:nil))
                                     return
                                 }
-                                
+
                                 do {
                                     // Writing the image to the URL
                                     try imageData.write(to: imageURL)
-                                    
+
                                     results.append([DATA_KEY: imageURL.absoluteString, MIME_TYPE_KEY: imageURL.extractMimeType()])
                                 } catch {
                                     print("Error writing image data: \(error.localizedDescription)")
