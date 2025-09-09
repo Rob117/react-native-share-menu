@@ -164,15 +164,18 @@ class ShareViewController: SLComposeServiceViewController {
   }
   
   func storeFile(withProvider provider: NSItemProvider, _ semaphore: DispatchSemaphore) {
+    // Add debugging to see what type identifiers are available
+    print("Provider registered type identifiers: \(provider.registeredTypeIdentifiers)")
+    
     // Use the enhanced extension methods for better type detection
     if provider.isImage {
-      print("Loading as image (from Photos app or image file)")
+      print("Loading as image (from Photos app, image file, or screenshot)")
       // Use the modern loadObject method for images to properly specify expected class
       if #available(iOS 11.0, *) {
         provider.loadObject(ofClass: UIImage.self) { (image, error) in
           if let error = error {
             print("Error loading UIImage object: \(error.localizedDescription)")
-            // Fallback to URL loading
+            // Fallback to URL loading (which will then fallback to data loading for screenshots)
             self.loadImageAsURL(provider: provider, semaphore: semaphore)
             return
           }
@@ -186,8 +189,9 @@ class ShareViewController: SLComposeServiceViewController {
           }
         }
       } else {
-        // Fallback for iOS < 11
-        self.loadImageAsURL(provider: provider, semaphore: semaphore)
+        // Fallback for iOS < 11 - go directly to data loading for screenshots
+        print("iOS < 11: trying data loading approach for potential screenshots")
+        self.loadImageAsData(provider: provider, semaphore: semaphore)
       }
     } else if provider.isData {
       print("Loading as data/file")
@@ -220,7 +224,8 @@ class ShareViewController: SLComposeServiceViewController {
       provider.loadObject(ofClass: URL.self) { (url, error) in
         if let error = error {
           print("Error loading URL object: \(error.localizedDescription)")
-          self.exit(withError: error.localizedDescription)
+          // Try the final fallback for screenshots
+          self.loadImageAsData(provider: provider, semaphore: semaphore)
           return
         }
         
@@ -229,7 +234,8 @@ class ShareViewController: SLComposeServiceViewController {
           self.handleImageData(imageURL, semaphore)
         } else {
           print("Failed to cast loaded object to URL")
-          self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+          // Try the final fallback for screenshots
+          self.loadImageAsData(provider: provider, semaphore: semaphore)
         }
       }
     } else {
@@ -242,6 +248,49 @@ class ShareViewController: SLComposeServiceViewController {
         }
         
         self.handleImageData(data, semaphore)
+      }
+    }
+  }
+  
+  private func loadImageAsData(provider: NSItemProvider, semaphore: DispatchSemaphore) {
+    print("Final fallback: Loading image as data (for screenshots)")
+    
+    // Use the generic loadItem method with public.image identifier
+    // This works for screenshots that can't be coerced to UIImage or URL objects
+    provider.loadItem(forTypeIdentifier: "public.image", options: nil) { (item, error) in
+      if let error = error {
+        print("Error loading image data: \(error.localizedDescription)")
+        self.exit(withError: error.localizedDescription)
+        return
+      }
+      
+      guard let item = item else {
+        print("Error: Image data item is nil")
+        self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
+        return
+      }
+      
+      print("Successfully loaded image data item of type: \(type(of: item))")
+      
+      // Handle different types that might be returned
+      if let image = item as? UIImage {
+        print("Item is UIImage - processing screenshot")
+        self.handleImageData(image, semaphore)
+      } else if let data = item as? Data {
+        print("Item is Data - converting to UIImage")
+        if let image = UIImage(data: data) {
+          print("Successfully converted Data to UIImage")
+          self.handleImageData(image, semaphore)
+        } else {
+          print("Error: Could not convert Data to UIImage")
+          self.exit(withError: COULD_NOT_CONVERT_IMG_ERROR)
+        }
+      } else if let url = item as? URL {
+        print("Item is URL - processing as file URL")
+        self.handleImageData(url, semaphore)
+      } else {
+        print("Error: Unknown item type for image data: \(type(of: item))")
+        self.exit(withError: COULD_NOT_FIND_IMG_ERROR)
       }
     }
   }
